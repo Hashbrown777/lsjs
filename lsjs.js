@@ -225,7 +225,7 @@ var define;
 				_inject(expandedId, dependentId, cb, scriptText);
 			} else if (storedModule === undefined || storedModule === null) {
 				_getModule(url, function(_url, scriptSrc, ts) {
-					var entry = {url: _url, timestamp: ts};
+					var entry = {url: _url, timestamp: (pkgs[_url]&&pkgs[_url].timestamp)||ts};
 					loaded[_url] = ts;
 					storage.set("loaded!"+cfg.baseUrl, loaded);
 					storage.set(_url, {src: scriptSrc, timestamp: ts});

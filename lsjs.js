@@ -227,7 +227,7 @@ var define;
 				_getModule(url, function(_url, scriptSrc, ts) {
 					var entry = {url: _url, timestamp: ts};
 					loaded[_url] = ts;
-					storage.set("loaded!"+window.location.pathname, loaded);
+					storage.set("loaded!"+cfg.baseUrl, loaded);
 					storage.set(_url, {src: scriptSrc, timestamp: ts});
 					_inject(expandedId, dependentId, cb, scriptSrc);
 				});
@@ -523,7 +523,7 @@ var define;
 		for (var url in cache) {
 			storedCache[url] = {value: cache[url], timestamp: cachets[url]};
 		}
-		storage.set("cache!"+window.location.pathname, storedCache);
+		storage.set("cache!"+cfg.baseUrl, storedCache);
 	};
 
 	define = function (id, dependencies, factory) {
@@ -683,11 +683,11 @@ var define;
 			throw new Error("Storage implementation is unsupported");
 		}
 
-		storage.get("loaded!"+window.location.pathname, function(value){
+		storage.get("loaded!"+cfg.baseUrl, function(value){
 			loaded = value;
 		}, function(error){});
 
-		storage.get("cache!"+window.location.pathname, function(storedcache) {
+		storage.get("cache!"+cfg.baseUrl, function(storedcache) {
 			for (var url in storedcache) {
 				cache[url] = storedcache[url].value;
 				cachets[url] = storedcache[url].timestamp;

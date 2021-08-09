@@ -190,7 +190,7 @@ var define;
 		document.documentElement.dispatchEvent(evt);
 	};
 
-	function _loadModule(id, cb, scriptText) {
+	function _loadModule(id, cb, f, scriptText) {
 		var expandedId = _expand(id);
 		var dependentId = _getCurrentId();
 		if (cblist[expandedId] === undefined) {
@@ -210,7 +210,7 @@ var define;
 					moduleStack = savedStack;
 				}
 			} else {
-				cblist[expandedId].push({cb:cb, mid:dependentId});
+				cblist[expandedId].push({cb:cb, /*f:f,*/ mid:dependentId});
 			}
 			return;
 		}
@@ -222,16 +222,16 @@ var define;
 		var storedModule;
 		function _load() {
 			if (scriptText) {
-				_inject(expandedId, dependentId, cb, scriptText);
+				_inject(expandedId, dependentId, cb, f, scriptText);
 			} else if (storedModule === undefined || storedModule === null) {
 				_getModule(url, function(_url, scriptSrc, ts) {
 					loaded[_url] = (pkgs[_url]&&pkgs[_url].timestamp)||ts;
 					storage.set("loaded!"+cfg.baseUrl, loaded);
 					storage.set(_url, {src: scriptSrc, timestamp: loaded[_url]});
-					_inject(expandedId, dependentId, cb, scriptSrc);
-				});
+					_inject(expandedId, dependentId, cb, f, scriptSrc);
+				}, f);
 			} else {
-				_inject(expandedId, dependentId, cb, storedModule.src);
+				_inject(expandedId, dependentId, cb, f, storedModule.src);
 			}
 		};
 		if (cfg.forceLoad || url in reload) {
@@ -248,7 +248,7 @@ var define;
 		}
 	};
 
-	function _inject(moduleId, dependentId, cb, scriptSrc) {
+	function _inject(moduleId, dependentId, cb, f, scriptSrc) {
 		var module = modules[moduleId];
 		moduleStack.push(module);
 		if (cfg.injectViaScriptTag) {
@@ -263,14 +263,14 @@ var define;
 		}
 		_loadModuleDependencies(module.id, function(){
 			moduleStack.pop();
-			cblist[moduleId].push({cb:cb, mid:dependentId});
+			cblist[moduleId].push({cb:cb, /*f:f,*/ mid:dependentId});
 			if (pageLoaded) {
 				fireZazlLoadEvent();
 			}
-		});
+		}, f);
 	};
 
-	function _getModule(url, cb) {
+	function _getModule(url, cb, f) {
 		var xhr = new XMLHttpRequest();
 		xhr.open("GET", url+"?nocache="+new Date().valueOf(), true);
 		xhr.onreadystatechange = function() {
@@ -278,14 +278,14 @@ var define;
 				if (xhr.status == 200) {
 					cb(url, xhr.responseText, _getTimestamp(xhr));
 				} else {
-					throw new Error("Unable to load ["+url+"]:"+xhr.status);
+					f("Unable to load ["+url+"]:"+xhr.status);
 				}
 			}
 		};
 		xhr.send(null);
 	};
 
-	function _loadModuleDependencies(id, cb) {
+	function _loadModuleDependencies(id, cb, f) {
 		var m = modules[id];
 		m.args = [];
 		m.deploaded = {};
@@ -318,7 +318,7 @@ var define;
 							m.args[argIdx] = pluginInstance;
 						}
 						m.deploaded[depname] = true;
-					});
+					}, f);
 					iterate(itr);
 				} else if (dependency === 'require') {
 					m.args[argIdx] = _createRequire(_getCurrentId());
@@ -352,7 +352,7 @@ var define;
 							m.args[argIdx] = module;
 						}
 						m.deploaded[depname] = true;
-					});
+					}, f);
 					iterate(itr);
 				}
 			} else {
@@ -363,7 +363,7 @@ var define;
 		iterate(new Iterator(m.dependencies));
 	};
 
-	function _loadPlugin(pluginName, pluginModuleName, cb) {
+	function _loadPlugin(pluginName, pluginModuleName, cb, f) {
 		_loadModule(pluginName, function(plugin){
 			if (plugin.normalize) {
 				pluginModuleName = plugin.normalize(pluginModuleName, _expand); 
@@ -398,10 +398,10 @@ var define;
 				cb(pluginInstance);
 			};
 			load.fromText = function(name, text) {
-				_loadModule(name, function(){}, text);
+				_loadModule(name, function(){}, f, text);
 			};
 			plugin.load(pluginModuleName, req, load, cfg);
-		});
+		}, f);
 	};
 
 	function _createRequire(id) {
@@ -462,7 +462,7 @@ var define;
 		return req;
 	};
 
-	function _getTimestamps(timestampUrl, cb) {
+	function _getTimestamps(timestampUrl, cb, f) {
 		var xhr = new XMLHttpRequest();
 		xhr.open("POST", timestampUrl, true);
 		xhr.setRequestHeader("Content-Type", "application/json");
@@ -476,7 +476,7 @@ var define;
 					}
 					cb();
 				} else {
-					throw new Error("Unable to get timestamps via the url ["+timestampUrl+"]:"+xhr.status);
+					f("Unable to get timestamps via the url ["+timestampUrl+"]:"+xhr.status);
 				}
 			}
 		};
@@ -562,7 +562,7 @@ var define;
 		jQuery: true
 	};
 
-	_require = function (dependencies, callback) {
+	_require = function (dependencies, callback, failure) {
 		if (isString(dependencies)) {
 			var id = dependencies;
 			id = _expand(id);
@@ -581,7 +581,8 @@ var define;
 				id = pluginName+"!"+pluginModuleName;
 			}
 			if (modules[id] === undefined) {
-				throw new Error("Module ["+id+"] has not been loaded");
+				failure("Module ["+id+"] has not been loaded");
+				throw null;
 			}
 			return modules[id].exports;
 		} else if (isArray(dependencies)) {
@@ -596,12 +597,12 @@ var define;
 						_loadPlugin(pluginName, pluginModuleName, function(pluginInstance) {
 							args.push(pluginInstance);
 							iterate(itr);
-						});
+						}, failure);
 					} else {
 						_loadModule(dependency, function(module){
 							args.push(module);
 							iterate(itr);
-						});
+						}, failure);
 					}
 				} else if (callback !== undefined) {
 					callback.apply(null, args);
@@ -618,7 +619,7 @@ var define;
 
 	var cfg;
 
-	function processConfig(config) {
+	function processConfig(config, failure) {
 		if (!cfg) {
 			var i;
 			cfg = config || {};
@@ -646,7 +647,8 @@ var define;
 				var requiredProps = ["get", "set", "remove", "isSupported"];
 				for (i = 0; i < requiredProps.length; i++) {
 					if (!storage[requiredProps[i]]) {
-						throw new Error("Storage implementation must implement ["+requiredProps[i]+"]");
+						failure("Storage implementation must implement ["+requiredProps[i]+"]");
+						throw null;
 					}
 				}
 			}
@@ -669,17 +671,26 @@ var define;
 		}
 	};
 
-	lsjs = function(config, dependencies, callback) {
-		if (!isArray(config) && typeof config == "object") {
-			processConfig(config);
-		} else {	
+	lsjs = function(config, dependencies, callback, failure) {
+		if (isArray(config) || typeof config != "object") {
+			failure = callback;
 			callback = dependencies;
 			dependencies = config;
-			processConfig(typeof lsjsConfig === 'undefined' ? {} : lsjsConfig);
+			config = (typeof lsjsConfig === 'undefined') ? {} : lsjsConfig;
 		}
+		if (!isArray(dependencies)) {
+			failure = callback;
+			callback = dependencies;
+			dependencies = [];
+		}
+		if (!isFunction(failure)) {
+			failure = function(message) { throw new Error(message); };
+		}
+		processConfig(config, failure);
 
 		if (!storage.isSupported()) {
-			throw new Error("Storage implementation is unsupported");
+			failure("Storage implementation is unsupported");
+			throw null;
 		}
 
 		storage.get("loaded!"+cfg.baseUrl, function(value){
@@ -693,31 +704,25 @@ var define;
 			}
 		}, function(error){});
 
-		if (!isArray(dependencies)) {
-			callback = dependencies;
-			dependencies = [];
-		}
-		function callRequire(dependencies, callback) {
+		function callRequire(dependencies) {
 			for (var i = 0; i < dependencies.length; i++) {
 				if (dependencies[i] !== 'exports' && dependencies[i] != 'module' && dependencies[i] !== 'require') {
 					strands[dependencies[i]] = false;
 				}
 			}
-			if (isFunction(callback)) {
-				_require(dependencies, function() {
-					callback.apply(null, arguments);
-				});
-			} else {
-				_require(dependencies);
-			}
+			_require(
+				dependencies,
+				(isFunction(callback)) ? callback : undefined,
+				failure
+			);
 			queueProcessor();
 		};
 		if (cfg.timestampUrl) {
 			_getTimestamps(cfg.timestampUrl, function(){
-				callRequire(dependencies, callback);
-			});
+				callRequire(dependencies);
+			}, failure);
 		} else {
-			callRequire(dependencies, callback);
+			callRequire(dependencies);
 		}
 	};
 

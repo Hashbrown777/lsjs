@@ -217,7 +217,7 @@ var define;
 		modules[expandedId] = {id: expandedId, exports: {}};
 
 		var url = _idToUrl(expandedId);
-		if (!/\.css$/.test(url))
+		if (!cssTest.test(url))
 			url += ".js";
 
 		var storedModule;
@@ -277,16 +277,40 @@ var define;
 		}, f);
 	};
 
+	var cssTest = /^([a-z]+:|(?![a-z]+:))(\/\/[^/]*\/|(?!\/\/))[^?#]*\.css([?#]|$)/;
+	var injectQuery = /^([^?#]*)(\?|(#.*)?$)/;
+	var cssURLs = /((?:\s|:|,)url\(\s*("|'|(?!"|'|\s)))(?![a-z]+:|\/\/)((?:\\.|(?!\2).|\2\2[^)])*\2\s*\))/g;
+	var mapURL = /(\n\/[/*]# sourceMappingURL=)(?![a-z]+:|\/\/)()(.*(?: \*\/)?)\n?$/;
+	var urlDomain = /^((?:[a-z]+:|(?![a-z]+:))(?:\/\/[^/]+(?=\/)|(?!\/\/)))([^?#]+)/
 	function _getModule(url, cb, f) {
 		var xhr = new XMLHttpRequest();
-		xhr.open("GET", url+"?nocache="+new Date().valueOf(), true);
+		xhr.open(
+			"GET",
+			url.replace(injectQuery, "$1?nocache="+new Date().valueOf()+"&"),
+			true
+		);
 		xhr.onreadystatechange = function() {
 			if (xhr.readyState == 4) {
-				if (xhr.status == 200) {
-					cb(url, xhr.responseText, _getTimestamp(xhr));
-				} else {
+				if (xhr.status != 200) {
 					f("Unable to load ["+url+"]:"+xhr.status);
+					return;
 				}
+
+				var origin = xhr.responseURL.match(urlDomain);
+				if (!origin[1])
+					origin[1] = location.origin;
+				if (origin[2][0] != '/')
+					origin[2] = location.pathname.replace(/\/?$/, '/') + origin[2];
+				origin[2] = origin[1] + origin[2].replace(/[^/]*$/, '');
+				function includeDomain(str, pre, x, path) {
+					return pre + origin[(path[0] == '/') ? 1 : 2] + path;
+				}
+				var scriptSrc = xhr.responseText;
+				if (cssTest.test(url))
+					scriptSrc = scriptSrc.replace(cssURLs, includeDomain);
+				scriptSrc = scriptSrc.replace(mapURL, includeDomain);
+
+				cb(url, scriptSrc, _getTimestamp(xhr));
 			}
 		};
 		xhr.send(null);

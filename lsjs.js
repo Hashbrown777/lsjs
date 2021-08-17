@@ -217,7 +217,8 @@ var define;
 		modules[expandedId] = {id: expandedId, exports: {}};
 
 		var url = _idToUrl(expandedId);
-		url += ".js";
+		if (!/\.css$/.test(url))
+			url += ".js";
 
 		var storedModule;
 		function _load() {
@@ -252,9 +253,15 @@ var define;
 		var module = modules[moduleId];
 		moduleStack.push(module);
 		if (cfg.injectViaScriptTag) {
-			var script = document.createElement('script');
-			script.type = "text/javascript";
-			script.charset = "utf-8";
+			var script;
+			if (/\.css$/.test(moduleId)) {
+				script = document.createElement('style');
+			}
+			else {
+				script = document.createElement('script');
+				script.type = "text/javascript";
+				script.charset = "utf-8";
+			}
 			var scriptContent = document.createTextNode(scriptSrc);
 			script.appendChild(scriptContent);
 			document.getElementsByTagName("head")[0].appendChild(script);

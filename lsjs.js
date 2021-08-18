@@ -157,7 +157,16 @@ var define;
 		return path;
 	};
 
+	var tailFinder = /^([^?#]*)([#?].*|)$/;
 	function _idToUrl(path) {
+		path = path.match(tailFinder);
+		var tail = path[2];
+		path = path[1];
+		if (cssTest.test(path)) {
+			path = path.substr(0, path.length - 4);
+			tail = ".css" + tail;
+		}
+		
 		var segments = path.split("/");
 		for (var i = segments.length; i >= 0; i--) {
 			var pkg;
@@ -176,7 +185,7 @@ var define;
 				break;
 			}
 		}
-		path = segments.join("/");
+		path = segments.join("/") + tail;
 		if (path.charAt(0) !== '/') {
 			path = cfg.baseUrl + path;
 		}

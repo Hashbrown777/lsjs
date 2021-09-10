@@ -143,22 +143,39 @@ var define;
 		return segments.join('/');
 	};
 
+	var isRelative    = /^\./;
+	var prenormalizeA = /\/\.(?=\/)/g;
+	var prenormalizeB = /(?<=(?:^|\/))[^./][^/]*\/\.\.\//g;
+	var prenormalizeC = /(?<=^|\/)([^./][^/]*)(?:\/\.)*\/\.\.(?:\/\.)*\/\1(?=\/|$)/g;
+	var memoized      = {};
 	function _expand(path) {
-		var isRelative = path.search(/^\./) === -1 ? false : true;
-		if (isRelative) {
-			var pkg;
-			if ((pkg = pkgs[_getCurrentId()])) {
-				path = pkg.name + "/" + path;
-			} else {
-				path = _getCurrentId() + "/../" + path;
+		var input = _getCurrentId() + '!' + path;
+		if (!memoized[input]) {
+			if (isRelative.test(path)) {
+				var pkg = pkgs[_getCurrentId()];
+				if (pkg && pkg.main) {
+					path = pkg.name + "/" + path;
+				} else if (_getCurrentId()) {
+					path = _getCurrentId() + "/../" + path;
+				}
 			}
-			path = _normalize(path);
+
+			for (
+				var tmp = path.replace(prenormalizeA, "");
+				(path = tmp.replace(prenormalizeB, "")) != tmp;
+				tmp = path
+			);
+			memoized[input] = path.replace(prenormalizeC, "$1");
 		}
-		return path;
+		return memoized[input];
 	};
 
+	var absolute   = /^([\w+.-]+:|\/)/;
 	var tailFinder = /^([^?#]*)([#?].*|)$/;
-	function _idToUrl(path) {
+	function _idToUrl(path, justPackage) {
+		var input = path;
+		if (memoized[input + !!justPackage])
+			return memoized[input + !!justPackage];
 		path = path.match(tailFinder);
 		var tail = path[2];
 		path = path[1];
@@ -168,15 +185,15 @@ var define;
 		}
 		
 		var segments = path.split("/");
+		var pkg = null;
 		for (var i = segments.length; i >= 0; i--) {
-			var pkg;
 			var parent = segments.slice(0, i).join("/");
 			if (paths[parent]) {
 				segments.splice(0, i, paths[parent]);
 				break;
 			}else if ((pkg = pkgs[parent])) {
 				var pkgPath;
-				if (path === pkg.name) {
+				if (path === pkg.name && pkg.main) {
 					pkgPath = pkg.location + '/' + pkg.main;
 				} else {
 					pkgPath = pkg.location;
@@ -185,12 +202,19 @@ var define;
 				break;
 			}
 		}
-		path = segments.join("/") + tail;
-		if (path.charAt(0) !== '/') {
+
+		path = segments.join("/");
+		if (pkg && pkg.suffix) {
+			path += pkg.suffix;
+		}
+		path = _normalize(path + tail);
+		if (!absolute.test(path)) {
 			path = cfg.baseUrl + path;
 		}
-		path = _normalize(path);
-		return path;
+
+		memoized[input + false] = path;
+		memoized[input + true] = pkg;
+		return memoized[input + !!justPackage];
 	};
 
 	function fireZazlLoadEvent() {
@@ -226,6 +250,8 @@ var define;
 		modules[expandedId] = {id: expandedId, exports: {}};
 
 		var url = _idToUrl(expandedId);
+		var normalizedId = _normalize(expandedId);
+		var pkg = _idToUrl(expandedId, true);
 		if (!cssTest.test(url))
 			url += ".js";
 
@@ -233,9 +259,9 @@ var define;
 		function _load() {
 			if (scriptText) {
 				_inject(expandedId, dependentId, cb, f, scriptText);
-			} else if (storedModule === undefined || storedModule === null) {
+			} else if (storedModule == null) {
 				_getModule(url, function(_url, scriptSrc, ts) {
-					loaded[_url] = (pkgs[_url]&&pkgs[_url].timestamp)||ts;
+					loaded[_url] = (pkg&&pkg.timestamp)||ts;
 					storage.set("loaded!"+cfg.baseUrl, loaded);
 					storage.set(_url, {src: scriptSrc, timestamp: loaded[_url]});
 					_inject(expandedId, dependentId, cb, f, scriptSrc);
@@ -290,7 +316,7 @@ var define;
 	var injectQuery = /^([^?#]*)(\?|(#.*)?$)/;
 	var cssURLs = /((?:\s|:|,)url\(\s*("|'|(?!"|'|\s)))(?![a-z]+:|\/\/)((?:\\.|(?!\2).|\2\2[^)])*\2\s*\))/g;
 	var mapURL = /(\n\/[/*]# sourceMappingURL=)(?![a-z]+:|\/\/)()(.*(?: \*\/)?)\n?$/;
-	var urlDomain = /^((?:[a-z]+:|(?![a-z]+:))(?:\/\/[^/]+(?=\/)|(?!\/\/)))([^?#]+)/
+	var urlDomain = /^((?:[a-z]+:|(?![a-z]+:))(?:\/\/[^/]+(?=\/)|(?!\/\/)))([^?#]+)/;
 	function _getModule(url, cb, f) {
 		var xhr = new XMLHttpRequest();
 		xhr.open(
@@ -675,8 +701,8 @@ var define;
 					if (!pkg.location) {
 						pkg.location = pkg.name;
 					}
-					if (!pkg.main) {
-						pkg.main = "main";
+					if (pkg.main == null) {
+						pkg.main = pkg.name;
 					}
 					pkgs[pkg.name] = pkg;
 				}
@@ -701,7 +727,7 @@ var define;
 
 			cfg.baseUrl = cfg.baseUrl || "./";
 
-			if (cfg.baseUrl.charAt(0) !== '/' && !cfg.baseUrl.match(/^[\w\+\.\-]+:/)) {
+			if (!absolute.test(cfg.baseUrl)) {
 				cfg.baseUrl = _normalize(window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/')) + '/'+ cfg.baseUrl);
 			}
 

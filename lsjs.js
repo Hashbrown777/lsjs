@@ -143,31 +143,57 @@ var define;
 		return segments.join('/');
 	};
 
+	var isRelative    = /^\./;
+	var prenormalizeA = /\/\.(?=\/)/g;
+	var prenormalizeB = /(?<=(?:^|\/))[^./][^/]*\/\.\.\//g;
+	var prenormalizeC = /(?<=^|\/)([^./][^/]*)(?:\/\.)*\/\.\.(?:\/\.)*\/\1(?=\/|$)/g;
+	var memoized      = {};
 	function _expand(path) {
-		var isRelative = path.search(/^\./) === -1 ? false : true;
-		if (isRelative) {
-			var pkg;
-			if ((pkg = pkgs[_getCurrentId()])) {
-				path = pkg.name + "/" + path;
-			} else {
-				path = _getCurrentId() + "/../" + path;
+		var input = _getCurrentId() + '!' + path;
+		if (!memoized[input]) {
+			if (isRelative.test(path)) {
+				var pkg = pkgs[_getCurrentId()];
+				if (pkg && pkg.main) {
+					path = pkg.name + "/" + path;
+				} else if (_getCurrentId()) {
+					path = _getCurrentId() + "/../" + path;
+				}
 			}
-			path = _normalize(path);
+
+			for (
+				var tmp = path.replace(prenormalizeA, "");
+				(path = tmp.replace(prenormalizeB, "")) != tmp;
+				tmp = path
+			);
+			memoized[input] = path.replace(prenormalizeC, "$1");
 		}
-		return path;
+		return memoized[input];
 	};
 
-	function _idToUrl(path) {
+	var absolute   = /^([\w+.-]+:|\/)/;
+	var tailFinder = /^([^?#]*)([#?].*|)$/;
+	function _idToUrl(path, justPackage) {
+		var input = path;
+		if (memoized[input + !!justPackage])
+			return memoized[input + !!justPackage];
+		path = path.match(tailFinder);
+		var tail = path[2];
+		path = path[1];
+		if (cssTest.test(path)) {
+			path = path.substr(0, path.length - 4);
+			tail = ".css" + tail;
+		}
+		
 		var segments = path.split("/");
+		var pkg = null;
 		for (var i = segments.length; i >= 0; i--) {
-			var pkg;
 			var parent = segments.slice(0, i).join("/");
 			if (paths[parent]) {
 				segments.splice(0, i, paths[parent]);
 				break;
 			}else if ((pkg = pkgs[parent])) {
 				var pkgPath;
-				if (path === pkg.name) {
+				if (path === pkg.name && pkg.main) {
 					pkgPath = pkg.location + '/' + pkg.main;
 				} else {
 					pkgPath = pkg.location;
@@ -176,12 +202,19 @@ var define;
 				break;
 			}
 		}
+
 		path = segments.join("/");
-		if (path.charAt(0) !== '/') {
+		if (pkg && pkg.suffix) {
+			path += pkg.suffix;
+		}
+		path = _normalize(path + tail);
+		if (!absolute.test(path)) {
 			path = cfg.baseUrl + path;
 		}
-		path = _normalize(path);
-		return path;
+
+		memoized[input + false] = path;
+		memoized[input + true] = pkg;
+		return memoized[input + !!justPackage];
 	};
 
 	function fireZazlLoadEvent() {
@@ -190,7 +223,7 @@ var define;
 		document.documentElement.dispatchEvent(evt);
 	};
 
-	function _loadModule(id, cb, scriptText) {
+	function _loadModule(id, cb, f, scriptText) {
 		var expandedId = _expand(id);
 		var dependentId = _getCurrentId();
 		if (cblist[expandedId] === undefined) {
@@ -210,29 +243,31 @@ var define;
 					moduleStack = savedStack;
 				}
 			} else {
-				cblist[expandedId].push({cb:cb, mid:dependentId});
+				cblist[expandedId].push({cb:cb, /*f:f,*/ mid:dependentId});
 			}
 			return;
 		}
 		modules[expandedId] = {id: expandedId, exports: {}};
 
 		var url = _idToUrl(expandedId);
-		url += ".js";
+		var normalizedId = _normalize(expandedId);
+		var pkg = _idToUrl(expandedId, true);
+		if (!cssTest.test(url))
+			url += ".js";
 
 		var storedModule;
 		function _load() {
 			if (scriptText) {
-				_inject(expandedId, dependentId, cb, scriptText);
-			} else if (storedModule === undefined || storedModule === null) {
+				_inject(expandedId, dependentId, cb, f, scriptText);
+			} else if (storedModule == null) {
 				_getModule(url, function(_url, scriptSrc, ts) {
-					var entry = {url: _url, timestamp: ts};
-					loaded[_url] = ts;
-					storage.set("loaded!"+window.location.pathname, loaded);
-					storage.set(_url, {src: scriptSrc, timestamp: ts});
-					_inject(expandedId, dependentId, cb, scriptSrc);
-				});
+					loaded[_url] = (pkg&&pkg.timestamp)||ts;
+					storage.set("loaded!"+cfg.baseUrl, loaded);
+					storage.set(_url, {src: scriptSrc, timestamp: loaded[_url]});
+					_inject(expandedId, dependentId, cb, f, scriptSrc);
+				}, f);
 			} else {
-				_inject(expandedId, dependentId, cb, storedModule.src);
+				_inject(expandedId, dependentId, cb, f, storedModule.src);
 			}
 		};
 		if (cfg.forceLoad || url in reload) {
@@ -249,13 +284,19 @@ var define;
 		}
 	};
 
-	function _inject(moduleId, dependentId, cb, scriptSrc) {
+	function _inject(moduleId, dependentId, cb, f, scriptSrc) {
 		var module = modules[moduleId];
 		moduleStack.push(module);
 		if (cfg.injectViaScriptTag) {
-			var script = document.createElement('script');
-			script.type = "text/javascript";
-			script.charset = "utf-8";
+			var script;
+			if (/\.css$/.test(moduleId)) {
+				script = document.createElement('style');
+			}
+			else {
+				script = document.createElement('script');
+				script.type = "text/javascript";
+				script.charset = "utf-8";
+			}
 			var scriptContent = document.createTextNode(scriptSrc);
 			script.appendChild(scriptContent);
 			document.getElementsByTagName("head")[0].appendChild(script);
@@ -264,29 +305,53 @@ var define;
 		}
 		_loadModuleDependencies(module.id, function(){
 			moduleStack.pop();
-			cblist[moduleId].push({cb:cb, mid:dependentId});
+			cblist[moduleId].push({cb:cb, /*f:f,*/ mid:dependentId});
 			if (pageLoaded) {
 				fireZazlLoadEvent();
 			}
-		});
+		}, f);
 	};
 
-	function _getModule(url, cb) {
+	var cssTest = /^([a-z]+:|(?![a-z]+:))(\/\/[^/]*\/|(?!\/\/))[^?#]*\.css([?#]|$)/;
+	var injectQuery = /^([^?#]*)(\?|(#.*)?$)/;
+	var cssURLs = /((?:\s|:|,)url\(\s*("|'|(?!"|'|\s)))(?![a-z]+:|\/\/)((?:\\.|(?!\2).|\2\2[^)])*\2\s*\))/g;
+	var mapURL = /(\n\/[/*]# sourceMappingURL=)(?![a-z]+:|\/\/)()(.*(?: \*\/)?)\n?$/;
+	var urlDomain = /^((?:[a-z]+:|(?![a-z]+:))(?:\/\/[^/]+(?=\/)|(?!\/\/)))([^?#]+)/;
+	function _getModule(url, cb, f) {
 		var xhr = new XMLHttpRequest();
-		xhr.open("GET", url+"?nocache="+new Date().valueOf(), true);
+		xhr.open(
+			"GET",
+			url.replace(injectQuery, "$1?nocache="+new Date().valueOf()+"&"),
+			true
+		);
 		xhr.onreadystatechange = function() {
 			if (xhr.readyState == 4) {
-				if (xhr.status == 200) {
-					cb(url, xhr.responseText, _getTimestamp(xhr));
-				} else {
-					throw new Error("Unable to load ["+url+"]:"+xhr.status);
+				if (xhr.status != 200) {
+					f("Unable to load ["+url+"]:"+xhr.status);
+					return;
 				}
+
+				var origin = xhr.responseURL.match(urlDomain);
+				if (!origin[1])
+					origin[1] = location.origin;
+				if (origin[2][0] != '/')
+					origin[2] = location.pathname.replace(/\/?$/, '/') + origin[2];
+				origin[2] = origin[1] + origin[2].replace(/[^/]*$/, '');
+				function includeDomain(str, pre, x, path) {
+					return pre + origin[(path[0] == '/') ? 1 : 2] + path;
+				}
+				var scriptSrc = xhr.responseText;
+				if (cssTest.test(url))
+					scriptSrc = scriptSrc.replace(cssURLs, includeDomain);
+				scriptSrc = scriptSrc.replace(mapURL, includeDomain);
+
+				cb(url, scriptSrc, _getTimestamp(xhr));
 			}
 		};
 		xhr.send(null);
 	};
 
-	function _loadModuleDependencies(id, cb) {
+	function _loadModuleDependencies(id, cb, f) {
 		var m = modules[id];
 		m.args = [];
 		m.deploaded = {};
@@ -319,7 +384,7 @@ var define;
 							m.args[argIdx] = pluginInstance;
 						}
 						m.deploaded[depname] = true;
-					});
+					}, f);
 					iterate(itr);
 				} else if (dependency === 'require') {
 					m.args[argIdx] = _createRequire(_getCurrentId());
@@ -353,7 +418,7 @@ var define;
 							m.args[argIdx] = module;
 						}
 						m.deploaded[depname] = true;
-					});
+					}, f);
 					iterate(itr);
 				}
 			} else {
@@ -364,7 +429,7 @@ var define;
 		iterate(new Iterator(m.dependencies));
 	};
 
-	function _loadPlugin(pluginName, pluginModuleName, cb) {
+	function _loadPlugin(pluginName, pluginModuleName, cb, f) {
 		_loadModule(pluginName, function(plugin){
 			if (plugin.normalize) {
 				pluginModuleName = plugin.normalize(pluginModuleName, _expand); 
@@ -399,10 +464,10 @@ var define;
 				cb(pluginInstance);
 			};
 			load.fromText = function(name, text) {
-				_loadModule(name, function(){}, text);
+				_loadModule(name, function(){}, f, text);
 			};
 			plugin.load(pluginModuleName, req, load, cfg);
-		});
+		}, f);
 	};
 
 	function _createRequire(id) {
@@ -463,7 +528,7 @@ var define;
 		return req;
 	};
 
-	function _getTimestamps(timestampUrl, cb) {
+	function _getTimestamps(timestampUrl, cb, f) {
 		var xhr = new XMLHttpRequest();
 		xhr.open("POST", timestampUrl, true);
 		xhr.setRequestHeader("Content-Type", "application/json");
@@ -477,7 +542,7 @@ var define;
 					}
 					cb();
 				} else {
-					throw new Error("Unable to get timestamps via the url ["+timestampUrl+"]:"+xhr.status);
+					f("Unable to get timestamps via the url ["+timestampUrl+"]:"+xhr.status);
 				}
 			}
 		};
@@ -523,7 +588,7 @@ var define;
 		for (var url in cache) {
 			storedCache[url] = {value: cache[url], timestamp: cachets[url]};
 		}
-		storage.set("cache!"+window.location.pathname, storedCache);
+		storage.set("cache!"+cfg.baseUrl, storedCache);
 	};
 
 	define = function (id, dependencies, factory) {
@@ -563,7 +628,7 @@ var define;
 		jQuery: true
 	};
 
-	_require = function (dependencies, callback) {
+	_require = function (dependencies, callback, failure) {
 		if (isString(dependencies)) {
 			var id = dependencies;
 			id = _expand(id);
@@ -582,7 +647,8 @@ var define;
 				id = pluginName+"!"+pluginModuleName;
 			}
 			if (modules[id] === undefined) {
-				throw new Error("Module ["+id+"] has not been loaded");
+				failure("Module ["+id+"] has not been loaded");
+				throw null;
 			}
 			return modules[id].exports;
 		} else if (isArray(dependencies)) {
@@ -597,12 +663,12 @@ var define;
 						_loadPlugin(pluginName, pluginModuleName, function(pluginInstance) {
 							args.push(pluginInstance);
 							iterate(itr);
-						});
+						}, failure);
 					} else {
 						_loadModule(dependency, function(module){
 							args.push(module);
 							iterate(itr);
-						});
+						}, failure);
 					}
 				} else if (callback !== undefined) {
 					callback.apply(null, args);
@@ -619,7 +685,7 @@ var define;
 
 	var cfg;
 
-	function processConfig(config) {
+	function processConfig(config, failure) {
 		if (!cfg) {
 			var i;
 			cfg = config || {};
@@ -635,8 +701,8 @@ var define;
 					if (!pkg.location) {
 						pkg.location = pkg.name;
 					}
-					if (!pkg.main) {
-						pkg.main = "main";
+					if (pkg.main == null) {
+						pkg.main = pkg.name;
 					}
 					pkgs[pkg.name] = pkg;
 				}
@@ -647,7 +713,8 @@ var define;
 				var requiredProps = ["get", "set", "remove", "isSupported"];
 				for (i = 0; i < requiredProps.length; i++) {
 					if (!storage[requiredProps[i]]) {
-						throw new Error("Storage implementation must implement ["+requiredProps[i]+"]");
+						failure("Storage implementation must implement ["+requiredProps[i]+"]");
+						throw null;
 					}
 				}
 			}
@@ -660,7 +727,7 @@ var define;
 
 			cfg.baseUrl = cfg.baseUrl || "./";
 
-			if (cfg.baseUrl.charAt(0) !== '/' && !cfg.baseUrl.match(/^[\w\+\.\-]+:/)) {
+			if (!absolute.test(cfg.baseUrl)) {
 				cfg.baseUrl = _normalize(window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/')) + '/'+ cfg.baseUrl);
 			}
 
@@ -670,55 +737,58 @@ var define;
 		}
 	};
 
-	lsjs = function(config, dependencies, callback) {
-		if (!isArray(config) && typeof config == "object") {
-			processConfig(config);
-		} else {	
+	lsjs = function(config, dependencies, callback, failure) {
+		if (isArray(config) || typeof config != "object") {
+			failure = callback;
 			callback = dependencies;
 			dependencies = config;
-			processConfig(typeof lsjsConfig === 'undefined' ? {} : lsjsConfig);
+			config = (typeof lsjsConfig === 'undefined') ? {} : lsjsConfig;
 		}
+		if (!isArray(dependencies)) {
+			failure = callback;
+			callback = dependencies;
+			dependencies = [];
+		}
+		if (!isFunction(failure)) {
+			failure = function(message) { throw new Error(message); };
+		}
+		processConfig(config, failure);
 
 		if (!storage.isSupported()) {
-			throw new Error("Storage implementation is unsupported");
+			failure("Storage implementation is unsupported");
+			throw null;
 		}
 
-		storage.get("loaded!"+window.location.pathname, function(value){
+		storage.get("loaded!"+cfg.baseUrl, function(value){
 			loaded = value;
 		}, function(error){});
 
-		storage.get("cache!"+window.location.pathname, function(storedcache) {
+		storage.get("cache!"+cfg.baseUrl, function(storedcache) {
 			for (var url in storedcache) {
 				cache[url] = storedcache[url].value;
 				cachets[url] = storedcache[url].timestamp;
 			}
 		}, function(error){});
 
-		if (!isArray(dependencies)) {
-			callback = dependencies;
-			dependencies = [];
-		}
-		function callRequire(dependencies, callback) {
+		function callRequire(dependencies) {
 			for (var i = 0; i < dependencies.length; i++) {
 				if (dependencies[i] !== 'exports' && dependencies[i] != 'module' && dependencies[i] !== 'require') {
 					strands[dependencies[i]] = false;
 				}
 			}
-			if (isFunction(callback)) {
-				_require(dependencies, function() {
-					callback.apply(null, arguments);
-				});
-			} else {
-				_require(dependencies);
-			}
+			_require(
+				dependencies,
+				(isFunction(callback)) ? callback : undefined,
+				failure
+			);
 			queueProcessor();
 		};
 		if (cfg.timestampUrl) {
 			_getTimestamps(cfg.timestampUrl, function(){
-				callRequire(dependencies, callback);
-			});
+				callRequire(dependencies);
+			}, failure);
 		} else {
-			callRequire(dependencies, callback);
+			callRequire(dependencies);
 		}
 	};
 

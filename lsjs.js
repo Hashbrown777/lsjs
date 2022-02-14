@@ -256,7 +256,9 @@ var define;
 			url += ".js";
 
 		var storedModule;
-		function _load() {
+		function _load(old, err) {
+			if (err)
+				console.warn(err);
 			if (scriptText) {
 				_inject(expandedId, dependentId, cb, f, scriptText);
 			} else if (storedModule == null) {
@@ -271,9 +273,7 @@ var define;
 			}
 		};
 		if (cfg.forceLoad || url in reload) {
-			storage.remove(url, function(){
-				_load();
-			});
+			storage.remove(url, _load, _load.bind(null, null));
 		} else {
 			storage.get(url, function(value) {
 				storedModule = value;
